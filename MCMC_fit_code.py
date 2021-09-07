@@ -22,6 +22,7 @@ import matplotlib.mlab as mlab
 import matplotlib.colors as colors
 from scipy.optimize import minimize
 from scipy.stats import levy_stable
+from scipy.stats import invgamma
 
 ###################################
 # MCMC things
@@ -140,7 +141,7 @@ Mach = args.Mach
 Alfven = args.Alfven
 chi = 1 * 10**(-args.chi)
 c_s = args.c_s
-rho_0 = 2e-21
+rho_0 = 2e-21 # This value for all sims
 B =  c_s * Mach * (1 / Alfven) * np.sqrt(4 * np.pi * rho_0)
 # Defining Speeds
 V_alfven = B / (np.sqrt(4 * np.pi * rho_0))
@@ -151,7 +152,7 @@ t_turb = (2 * L) / (c_s * Mach)
 t_turnover = t_turb / 2
 t_alfven = (2 * L) / V_alfven
 ###################################
-by_num = 100 # Added to speed up small scale local PC testing
+by_num = 100 # Added to speed up small scale local PC testing set to 1 for GADI
 if (by_num > args.filenum):
     by_num = 1
     print(f'Chunk gap revert to {1}')
@@ -235,9 +236,9 @@ for k in range(total_load_ins):
 ### Age Selections
 ########################################
 Data_Combine = np.column_stack((displacement_perp,time_vals, displacement_par))
-# Delete old particles
-Data_Use = Data_Combine[Data_Combine[:,1] > 1e13]
-Data_Use = Data_Use[Data_Use[:,1] < 5e13]
+# Delete old particles 
+Data_Use = Data_Combine[Data_Combine[:,1] > 1e2]
+Data_Use = Data_Use[Data_Use[:,1] < 1e13]
 
 ################################################
 ### Levi Dist
@@ -245,7 +246,6 @@ Data_Use = Data_Use[Data_Use[:,1] < 5e13]
 def distributionLevy(pos,alpha,beta, scale, loc):
     Prob = levy_stable.pdf(pos, alpha, beta, loc, scale)
     return Prob
-
 
 ################################################
 #### MCMC 
@@ -255,15 +255,14 @@ def distributionLevy(pos,alpha,beta, scale, loc):
 ### Define log likelyhood
 def log_lik_drift(theta,pos, t):
     L_n =  4
-    finite_val = 40
+    finite_val = 10
     beta = 0
     mu = 0
     alpha = theta[0]
     scale = theta[1]
     drift = theta[2] 
-    drift_val = drift * Vstr 
     ### Account for drift
-    pos = pos  -  (drift_val * t) 
+    pos = pos  -  (drift * L_n * t) 
     dist_levi = np.zeros(len(pos))
     ### Sum of Levi dist over x + n* L for finite n 
     for i in range(-finite_val, finite_val):
@@ -277,7 +276,7 @@ def log_lik_drift(theta,pos, t):
 ### Defining prior distribution
 def log_prior(theta):
     alpha, scale, drift = theta
-    if 0.0 < alpha <= 2 and 0.05 < scale < 10 and 0 <= drift < 50:
+    if 0.0 < alpha <= 2 and 0.05 < scale < 1e3 and 0 <= drift < 1e3:
         return 0.0
     return -np.inf
 
@@ -293,15 +292,16 @@ def log_probability(theta, pos, t):
 '''
    Beginning of MCMC routine, here the function 
    log_lik_drift is the likelyhood function.
-   Searching over 3 parameters, alpha (from Levi),
-   scale/kappa (from Levi) and drift/gamma which
+   Searching over 3 parameters, alpha (from Levy),
+   scale/kappa (from Levy) and drift/gamma which
    is to account for the drift in parallel diffusion.
 '''
 #######################################################
 
 if __name__ == '__main__':
     
-
+    ###################################
+    ### Perpendicular
     ###################################
     ''' Non dimensionalise everything'''
     # L = driving scale
@@ -310,7 +310,7 @@ if __name__ == '__main__':
     ###################################
     ### Naive intial guess to check values
     # Not used in fitting
-    par , log_lik = levy.fit_levy((pos**2 / t),beta=0, mu = 0)
+    par , log_lik = levy.fit_levy((pos**2 / t),beta=0)
     values = par.get('0') ; scale = values[3] ; alpha = values[0]
     mu = values[2]  ; beta = values[1]
     print(f'scale: {scale}, Mean: {mu}')
@@ -318,8 +318,8 @@ if __name__ == '__main__':
     ###################################
     # Set initial drift guess as mean 
     n_cores = 3 # Core num
-    num_walkers = n_cores * 3
-    num_of_steps = 1000
+    num_walkers = n_cores * 4
+    num_of_steps = 1200
     alpha = 1.5
     scale = 4
     drift = 1
@@ -338,15 +338,88 @@ if __name__ == '__main__':
                         num_of_steps,
                         progress=True)
     
+    ###################################
+    ### Visualisations
+    fig, axes = plt.subplots(3, figsize=(10, 7), sharex=True)
+    samples = sampler.get_chain()
+    labels = [r"$\alpha$", "scale", "drift"]
+    for i in range(ndim):
+        ax = axes[i]
+        ax.plot(samples[:, :, i], "midnightblue", alpha=0.3)
+        ax.set_xlim(0, len(samples))
+        ax.set_ylabel(labels[i])
+        ax.yaxis.set_label_coords(-0.1, 0.5)
+
+    
+    axes[-1].set_xlabel("step number")
+    name = 'bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
+    plt.savefig(name)
+    plt.close()
+    flat_samples = sampler.get_chain(discard=400, thin=15, flat=True)
     
     ###################################
-    ### Running the MCMC steps
-    '''
-    sampler = emcee.EnsembleSampler(
-        nwalkers, ndim, log_probability, args=(pos, t)
-    )
-    sampler.run_mcmc(position, num_of_steps, progress=True);
-    '''
+    ### Corner plot
+    labels          = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
+    # initialise figure
+    fig             = corner.corner(flat_samples,
+                        labels=labels,
+                        quantiles=[0.16, 0.5, 0.84],
+                        show_titles=True,
+                        title_kwargs={"fontsize": 12},
+                        color='midnightblue',
+                        truth_color='red',
+                        truths=[np.median(flat_samples[:,0]), np.median(flat_samples[:,1]), np.median(flat_samples[:,2])])
+    #fig.suptitle(r'$\mathcal{M} = 2 \ \ \ \mathcal{M}_{A0} \approx 2 \ \ \ \chi = 1 \times10^{-4}$',
+    #fontsize = 24,y=0.98)
+    name = 'corner_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
+    plt.savefig(name)
+    plt.close()
+
+    ############################################################
+    ### Save data and 1 sigma levels
+    ############################################################
+    alpha_par  = np.median(flat_samples[:,0])
+    a_par_lo = np.median(flat_samples[:,0]) + np.std(flat_samples[:,0])
+    a_par_hi = np.median(flat_samples[:,0]) - np.std(flat_samples[:,0])
+    scale_par = np.median(flat_samples[:,1])
+    s_par_lo = np.median(flat_samples[:,1]) + np.std(flat_samples[:,1])
+    s_par_hi = np.median(flat_samples[:,1]) - np.std(flat_samples[:,1])
+    drift_par = np.median(flat_samples[:,2])
+    d_par_lo = np.median(flat_samples[:,2]) + np.std(flat_samples[:,2])
+    d_par_hi = np.median(flat_samples[:,2]) - np.std(flat_samples[:,2])
+    
+    ###################################
+    ### Parallel
+    ###################################
+    ''' Non dimensionalise everything'''
+    # L = driving scale
+    pos = 2 * Data_Use[:,2] / L                       # Divide by Driving scale
+    t = Data_Use[:,1] / ( (2 * L) / (c_s * Mach) )    # Divide by turbulent time
+    ###################################
+   
+    ###################################
+    # Set initial drift guess as mean 
+    n_cores = 3 # Core num
+    #num_walkers = n_cores * 4
+    #num_of_steps = 1000
+    alpha = 1.5
+    scale = 4
+    drift = 1
+    print(f'Alpha: {alpha}, Scale: {scale}, Drift: {drift}')
+    params = np.array([alpha, scale, drift])
+    init_guess = params
+    position = init_guess + 1e-2 * np.random.randn(num_walkers, 3) # Add random noise to guess
+    nwalkers, ndim = position.shape
+    
+    ###################################
+    # Multiprocessing    
+    with Pool(n_cores) as pool:
+        sampler = emcee.EnsembleSampler(
+            nwalkers, ndim, log_probability, args=(pos, t), pool=pool)
+        sampler.run_mcmc(position,
+                        num_of_steps,
+                        progress=True)
+    
     ###################################
     ### Visualisations
     fig, axes = plt.subplots(3, figsize=(10, 7), sharex=True)
@@ -364,7 +437,7 @@ if __name__ == '__main__':
     name = 'bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_par' + '.png'
     plt.savefig(name)
     plt.close()
-    flat_samples = sampler.get_chain(discard=600, thin=15, flat=True)
+    flat_samples = sampler.get_chain(discard=400, thin=15, flat=True)
     
     ###################################
     ### Corner plot
@@ -384,5 +457,78 @@ if __name__ == '__main__':
     plt.savefig(name)
     plt.close()
     
-    ###################################
-    ### Store table data
+    ############################################################
+    ### Save data and 1 sigma levels
+    ############################################################
+    alpha_perp  = np.median(flat_samples[:,0])
+    a_perp_lo = np.median(flat_samples[:,0]) + np.std(flat_samples[:,0])
+    a_perp_hi = np.median(flat_samples[:,0]) - np.std(flat_samples[:,0])
+    scale_perp = np.median(flat_samples[:,1])
+    s_perp_lo = np.median(flat_samples[:,1]) + np.std(flat_samples[:,1])
+    s_perp_hi = np.median(flat_samples[:,1]) - np.std(flat_samples[:,1])
+    drift_perp = np.median(flat_samples[:,2])
+    d_perp_lo = np.median(flat_samples[:,2]) + np.std(flat_samples[:,2])
+    d_perp_hi = np.median(flat_samples[:,2]) - np.std(flat_samples[:,2])
+
+    ############################################################
+    ### Making results array
+    ############################################################
+    # Results arrary, format is: 
+    # Mach || Alfven || Ion || Dpar || Dperp || EPar || EPerp ||
+    #  alpha_par || alpha_perp || scale_par || scale_perp || drift_par || drift_perp ||
+    
+    IonFrac = 1 * 10**(-args.chi)
+    KPar = scale_par**alpha_par
+    KPerp = scale_perp**alpha_perp
+    ErrorPerp = 1
+    ErrorPar = 1
+    results = np.array([args.Mach, args.Alfven, IonFrac, KPar , KPerp , ErrorPar , ErrorPerp,
+    alpha_par, a_par_lo, a_par_hi, alpha_perp, a_perp_lo, a_perp_hi, 
+    scale_par, s_par_lo, s_par_hi, scale_perp, s_perp_lo, s_perp_hi, 
+    drift_par, d_par_lo, d_par_hi,drift_perp, d_perp_lo, d_perp_hi])
+
+    ################################################
+    ### Saving results as txt file
+    ################################################
+    Filename = 'MCMC_results_' + args.dir + '.txt'
+    np.savetxt(Filename, results, delimiter=',')
+
+    ################################################
+    ### Plotting fitted Levy distribution
+    ################################################
+    ### Get hist data
+    fig = plt.figure(figsize=(20.0,8.0), dpi = 150)
+    ### Plotting Perpendicular
+    pos = 2 * Data_Use[:,0] / L 
+    pos_perp = (((np.abs(pos - drift_perp * t))**(alpha_perp))) / t
+    Prob_perp_analytic = levy.levy(pos_perp, alpha=alpha_perp, beta=0, 
+        mu=0, sigma=scale_perp, cdf=False)
+    #Prob_perp_analytic = Prob_perp_analytic / sum(Prob_perp_analytic)
+    pos = 2 * Data_Use[:,2] / L 
+    pos_par = (((np.abs(pos - drift_par * t))**(alpha_par))) / t
+    Prob_par_analytic = levy.levy(pos_par, alpha=alpha_par, beta=0, 
+        mu=0, sigma=scale_par, cdf=False)
+    #Prob_par_analytic = Prob_par_analytic / sum(Prob_par_analytic)
+    plt.subplot(1,2,1)
+    counts, bins = np.histogram(pos_perp, bins = 25)
+    #counts = counts / sum(counts)
+    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', edgecolor = 'midnightblue', label = r'CRIPTIC')
+    plt.scatter(pos_perp, Prob_perp_analytic, linestyle='--', c='red',
+            alpha=0.99, label='Levy', s = 7)
+    #plt.plot(bincenters, y / max(y), ls = '--', c=green_m, lw=2,
+    #        label=r'CRIPTIC $\Delta x$')
+    plt.legend(frameon=False,fontsize=20, loc = 'upper right')
+    plt.xlabel(r'($|\Delta x - \nu_{\perp}|)^{\alpha_{\perp}} / t$', fontsize = 26)
+    plt.title(r'Perpendicular $\mathcal{M}_{A0} \approx 8$',fontsize = 28)
+    
+    plt.subplot(1,2,2)
+    plt.scatter(pos_par, Prob_par_analytic, linestyle='--', c='red',
+            alpha=0.99, label='Levy', s = 7)
+    counts, bins = np.histogram(pos_par, bins = 25)
+    #counts = counts / sum(counts)
+    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', edgecolor = 'midnightblue', label = r'CRIPTIC')
+    plt.legend(frameon=False,fontsize=20, loc = 'upper right')
+    plt.xlabel(r'($|\Delta z - \nu_{\parallel}|)^{\alpha_{\parallel}} / t$', fontsize = 26)
+    plt.title(r'Parallel $\mathcal{M}_{A0} \approx 8$',fontsize = 28)
+    plt.savefig("Fitting.png")
+    plt.close()
