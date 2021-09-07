@@ -255,7 +255,7 @@ def distributionLevy(pos,alpha,beta, scale, loc):
 ### Define log likelyhood
 def log_lik_drift(theta,pos, t):
     L_n =  4
-    finite_val = 10
+    finite_val = 100
     beta = 0
     mu = 0
     alpha = theta[0]
