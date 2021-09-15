@@ -24,6 +24,7 @@ from scipy.stats import levy_stable
 from scipy.stats import invgamma
 from scipy import stats
 from scipy.stats import norm
+from scipy.stats import rv_histogram
 ###################################
 # MCMC things
 import scipy.stats as st, levy
@@ -229,10 +230,10 @@ for k in range(total_load_ins):
 Data_Combine = np.column_stack((displacement_perp, time_vals ,displacement_par ))
 # Subset data for speed
 Data_Use = Data_Combine[Data_Combine[:,1] > 1e1]
-Data_Use = Data_Use[Data_Use[:,1] < 1e13]
+Data_Use = Data_Use[Data_Use[:,1] < 1e14]
 ### Randomly sample data points
 number_of_rows = Data_Use.shape[0]
-data_points = 1000
+data_points = 500
 random_indices = np.random.choice(number_of_rows, size=data_points, replace=False)
 Data_Use = Data_Use[random_indices, :]
 
@@ -258,12 +259,12 @@ def log_lik_drift(theta,pos, t):
     ### Account for drift
     pos_n =  pos  -  (drift * t) % L_n
     for n in range(len(pos_n)):
-        if (np.abs(pos_n[n]) > 1):
+        while (np.abs(pos_n[n]) > 1):
             pos_n[n] = pos_n[n] - np.sign(pos_n[n]) * 2
 
     ### Initialising variables
     chi = 0
-    tol = 0.1                                     # 1% Tolerance
+    tol = 0.1                            # 1% Tolerance
     finite_range = 8
     bin_num = 40
     x_dim = (pos_n) / (t**(1 / alpha))
@@ -285,30 +286,25 @@ def log_lik_drift(theta,pos, t):
             dist_levy += dist_n1
         err = np.abs(1 - np.sum(dist_n1) / np.sum(dist_n0))
         jump_val += finite_range - 1
-    ###############################################    
+    
+    ############################################### 
+    ### Data PDF
+    x_dim = (pos_n) / (t**(1 / alpha))
+    sorted_indices = np.argsort(x_dim)
+    x_dim = x_dim[sorted_indices]
+    dist_levy = dist_levy[sorted_indices]
+    r = rv_histogram(np.histogram(x_dim, bins=45))
+    data_pdf = r.pdf(x_dim)
 
-    x_dim = pos_n / (t**(1 / alpha))    # Similarity transform
-    counts, bins = np.histogram(x_dim, bins = bin_num, density = True)
-    #dist_levy = dist_levy[1:len(bins)]
-    #count_probs = counts * (bins[1] - bins[0])
-    #sorted_indices = np.argsort(x_dim)
-    #x_dim = x_dim[sorted_indices]
-    #dist_levy = dist_levy[sorted_indices]
-    #spacing = np.diff(x_dim)
-    #integrand = spacing * dist_levy[0:len(x_dim)-1]
-    #log_like = np.sum(np.log(integrand))
-    ### Make KDE -- Data pdf comparison not working
-    vals = stats.gaussian_kde(x_dim)
-    Test = stats.gaussian_kde.pdf(vals,x_dim)
-    chi = np.sum(((Test - dist_levy)**2 )/ dist_levy)  # chi^2
+    ### Compute chi^2
+    chi = np.sum(((data_pdf - dist_levy)**2 )/ dist_levy)  # chi^2 
     return -chi
-    #return log_like
 
 ###################################
 ### Defining prior distribution
 def log_prior(theta):
     alpha, scale, drift = theta
-    if 1.0 < alpha <= 2.0 and 0.0 < scale < 1e4 and 0 <= drift < 100:
+    if 1.0 < alpha <= 2.0 and 0.0 < scale < 1e4 and 0 <= drift:
         return 0.0
     return -np.inf
 
@@ -349,9 +345,9 @@ if __name__ == '__main__':
     ####################################
     # Set initial drift guess as mean 
     n_cores = 3 # Core num
-    num_walkers = n_cores * 8
-    num_of_steps = 500
-    burn_num = 400
+    num_walkers = n_cores * 6
+    num_of_steps = 250
+    burn_num = 175
     alpha = 1.4
     scale = 0.5
     drift = 0.2 
@@ -565,16 +561,26 @@ if __name__ == '__main__':
     mu=mu, sigma=scale_perp, cdf=False) # p(theta | x)
     init_sum = np.sum(dist_init)
     ewald_sum = init_sum
-    tol = 0.1                                     # 1% Tolerance
-    #while  (ewald_sum / init_sum > tol):           # Add more terms 
-    for i in range(-finite_val, finite_val):
-            x_dim = (pos +  i * L_n) / (t**(1 / alpha_perp))
-            x_dim = np.sort(x_dim)
-            dist_levy += levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
-            mu=mu, sigma=scale_perp, cdf=False) # p(theta | x)
-    #    ewald_sum = np.sum(levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
-    #        mu=mu, sigma=scale_perp, cdf=False))
+    x_dim = (pos_n) / (t**(1 / alpha_perp))
+    dist_levy = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_perp, cdf=False)
+    dist_n1   = dist_levy
+    err = 5 * tol
+    jump_val = 0
+    ###############################################
+    ### Ewalds summation for periodic bounds
+    while  (err > tol):           # Add more terms 
+        for i in [x for x in range(finite_range - 1, -finite_range, -1) if x !=0]:
+            x_dim = (pos_n +  i * L_n + np.sign(i) * jump_val * L_n) / (t**(1 / alpha_perp))
+            dist_n0 = dist_n1
+            dist_n1 = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_perp, cdf=False) # p(x| theta) for n + 1
+            dist_levy += dist_n1
+        err = np.abs(1 - np.sum(dist_n1) / np.sum(dist_n0))
+        jump_val += finite_range - 1
     Prob_perp_analytic = dist_levy
+    ################################################
+    
     x_dim = pos / (t**(1 / alpha_perp))
     x_dim = np.sort(x_dim)
     Prob_perp_n0 = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
@@ -585,7 +591,7 @@ if __name__ == '__main__':
     
     ############################################
     ### Finite val 2
-    finite_val_2 = 20
+    finite_val_2 = 5
     Prob_perp_analytic_2 = np.zeros(len(x_dim))
     for i in range(-finite_val_2, finite_val_2):
             x_dim = (pos +  i * L_n) / (t**(1 / alpha_perp))
@@ -620,16 +626,26 @@ if __name__ == '__main__':
     mu=mu, sigma=scale_par, cdf=False) # p(theta | x)
     init_sum = np.sum(dist_init)
     ewald_sum = init_sum
-    tol = 0.1                                     # 1% Tolerance
-    #while  (ewald_sum / init_sum > tol):           # Add more terms 
-    for i in range(-finite_val, finite_val):
-            x_dim_par = (pos_par +  i * L_n) / (t**(1 / alpha_par))
-            x_dim_par = np.sort(x_dim_par)
-            dist_levy += levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
-            mu=mu, sigma=scale_par, cdf=False) # p(theta | x)
-    #    ewald_sum = np.sum(levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
-    #        mu=mu, sigma=scale_par, cdf=False))
+    x_dim_par = (pos_par) / (t**(1 / alpha_par))
+    dist_levy = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_par, cdf=False)
+    dist_n1   = dist_levy
+    err = 5 * tol
+    jump_val = 0
+    ###############################################
+    ### Ewalds summation for periodic bounds
+    while  (err > tol):           # Add more terms 
+        for i in [x for x in range(finite_range - 1, -finite_range, -1) if x !=0]:
+            x_dim_par = (pos_par +  i * L_n + np.sign(i) * jump_val * L_n) / (t**(1 / alpha_par))
+            dist_n0 = dist_n1
+            dist_n1 = levy.levy(x_dim, alpha=alpha_par, beta=beta, 
+            mu=mu, sigma=scale_par, cdf=False) # p(x| theta) for n + 1
+            dist_levy += dist_n1
+        err = np.abs(1 - np.sum(dist_n1) / np.sum(dist_n0))
+        jump_val += finite_range - 1
     Prob_par_analytic = dist_levy
+    ################################################
+
     x_dim_par = pos_par / (t**(1 / alpha_par))
     x_dim_par = np.sort(x_dim_par)
     Prob_par_n0 = levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
@@ -681,9 +697,9 @@ if __name__ == '__main__':
     plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
             alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
     plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = {finite_val}', lw = 3, zorder = 2)
-    plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
-            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+            alpha=0.99, label=f'Levy n = Converged', lw = 3, zorder = 2)
+    #plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
+    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.ylabel(r'PDF', fontsize = 26)
@@ -703,9 +719,9 @@ if __name__ == '__main__':
     plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
             alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
     plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = {finite_val}', lw = 3, zorder = 2)
-    plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
-            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+            alpha=0.99, label=f'Levy n = Converged', lw = 3, zorder = 2)
+    #plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
+    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
     plt.ylabel(r'log(PDF)', fontsize = 26)
@@ -717,9 +733,9 @@ if __name__ == '__main__':
     plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
             alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
     plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = {finite_val}', lw = 2)
-    plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
-            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+            alpha=0.99, label=f'Levy n = Converged', lw = 2)
+    #plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
+    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     counts, bins = np.histogram(x_dim_par, bins = bin_num)
     plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
@@ -739,9 +755,9 @@ if __name__ == '__main__':
     plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
             alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
     plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = {finite_val}', lw = 2)
-    plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
-            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+            alpha=0.99, label=f'Levy n = Converged', lw = 2)
+    #plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
+    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
@@ -783,4 +799,5 @@ if __name__ == '__main__':
     Filename = 'coefs_' + args.dir + '.txt'
     np.savetxt(Filename, results, delimiter=',')
     ################################################
+   
    
