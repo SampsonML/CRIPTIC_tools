@@ -2,7 +2,6 @@
 Fitting Script for diffusion coefficents CR study
 Matt Sampson 2021
 """
-
 import argparse
 import numpy as np
 from numpy import diff
@@ -23,7 +22,8 @@ import matplotlib.colors as colors
 from scipy.optimize import minimize
 from scipy.stats import levy_stable
 from scipy.stats import invgamma
-
+from scipy import stats
+from scipy.stats import norm
 ###################################
 # MCMC things
 import scipy.stats as st, levy
@@ -31,7 +31,6 @@ import emcee
 import corner
 from multiprocessing import Pool, cpu_count
 ###################################
-
 ############################################
 #### Astro Plot Aesthetics Pre-Amble
 ############################################
@@ -47,7 +46,6 @@ mpl.rcParams['font.family'] = 'sans-serif'
 mpl.rcParams['font.sans-serif'] = ['DejaVu Sans']
 plt.rcParams['axes.prop_cycle'] = plt.cycler(color=plt.cm.Set1.colors)
 #Direct input 
-
 #plt.rcParams['text.latex.preamble']=[r"\usepackage{lmodern}"]
 #Options
 params =   {'text.usetex' : True,
@@ -121,20 +119,14 @@ for line in fp:
     elif s[0] == 'prob.r':
         rsrc = float(s[1]) * u.cm
 fp.close()
-
 ###################################
 # Initialise Problem
 ##################################
-# Allocate numpy arrary
-variance_cr_perp     = np.zeros(args.filenum)
-variance_cr_par     = np.zeros(args.filenum)
 chunk_age       = np.zeros(args.filenum)
-error_variance_perp  = np.zeros(args.filenum)
-error_variance_par  = np.zeros(args.filenum)
 displacement = [0] ; displacement_par = [0]
 displacement_perp = [0] ; displacement_perp_y = [0]
 time_vals = [0]
-# Domain Size
+# 1 /2 Domain Size
 L = 3.09e19
 # Getting MHD specific parameters
 Mach = args.Mach
@@ -151,7 +143,10 @@ t_cross = 2 * L / Vstr
 t_turb = (2 * L) / (c_s * Mach)
 t_turnover = t_turb / 2
 t_alfven = (2 * L) / V_alfven
-###################################
+
+#############################################################
+### Beginning data read in
+#############################################################
 by_num = 100 # Added to speed up small scale local PC testing set to 1 for GADI
 if (by_num > args.filenum):
     by_num = 1
@@ -169,7 +164,6 @@ for k in range(total_load_ins):
                                  chkname+"[0-9][0-9][0-9][0-9][0-9].txt"))
         chknums = [ int(c[-9:-4]) for c in chkfiles ]
         chknum = "{:05d}".format(np.amax(chknums))
-
     ########################################################
     # Check if file exists
     Path = osp.join(args.dir,chkname+chknum) + '.txt'
@@ -183,7 +177,7 @@ for k in range(total_load_ins):
     t, packets, delpackets, sources = readchk(osp.join(args.dir,
                                                        chkname+chknum))
     ########################################################
-    
+
     ########################################################
     ### Extract useful particle information
     ########################################################
@@ -202,7 +196,6 @@ for k in range(total_load_ins):
     tuples = zip(*sorted_pairs)
     particle_age, x_pos, y_pos, z_pos, source = [ list(tuple) for tuple in  tuples]
     particle_age = np.asarray(particle_age)
-    #particle_age = particle_age / (60 * 60 * 24 * 365)
     x_pos = np.asarray(x_pos)
     y_pos = np.asarray(y_pos)
     z_pos = np.asarray(z_pos)
@@ -210,7 +203,6 @@ for k in range(total_load_ins):
     ##########################################################
     ### Adjust for Periodicity and Source Location
     ##########################################################
-    
     for i in range(len(x_pos)):
         # The bounds adjustment
         if (np.abs(x_pos[i] - source_x[source[i]]) >= L):
@@ -219,7 +211,6 @@ for k in range(total_load_ins):
             y_pos[i] = y_pos[i] - np.sign(y_pos[i]) * 2 * L
         if (np.abs(z_pos[i] - source_z[source[i]]) >= L):
             z_pos[i] = z_pos[i] - np.sign(z_pos[i]) * 2 * L
-
         # The source adjustment to center all CRs
         x_pos[i] = x_pos[i] - source_x[source[i]]
         y_pos[i] = y_pos[i] - source_y[source[i]]
@@ -228,55 +219,85 @@ for k in range(total_load_ins):
     ########################################
     ### Displacement All Data
     ########################################
-    displacement_perp = np.append(displacement_perp, (x_pos + x_pos)/2)
+    displacement_perp = np.append(displacement_perp, (x_pos + y_pos)/2)
     displacement_par = np.append(displacement_par, z_pos)
     time_vals = np.append(time_vals, particle_age)
 
 ########################################
 ### Age Selections
 ########################################
-Data_Combine = np.column_stack((displacement_perp,time_vals, displacement_par))
-# Delete old particles 
-Data_Use = Data_Combine[Data_Combine[:,1] > 1e2]
-Data_Use = Data_Use[Data_Use[:,1] < 1e13]
-
-################################################
-### Levi Dist
-################################################
-def distributionLevy(pos,alpha,beta, scale, loc):
-    Prob = levy_stable.pdf(pos, alpha, beta, loc, scale)
-    return Prob
+Data_Combine = np.column_stack((displacement_perp, time_vals ,displacement_par ))
+# Subset data for speed
+Data_Use = Data_Combine[Data_Combine[:,1] > 1e1]
+Data_Use = Data_Use[Data_Use[:,1] < 5e12]
+### Randomly sample data points
+number_of_rows = Data_Use.shape[0]
+data_points = 800
+random_indices = np.random.choice(number_of_rows, size=data_points, replace=False)
+Data_Use = Data_Use[random_indices, :]
 
 ################################################
 #### MCMC 
 ################################################
-
 ###################################
 ### Define log likelyhood
 def log_lik_drift(theta,pos, t):
-    L_n =  4
-    finite_val = 100
-    beta = 0
-    mu = 0
-    alpha = theta[0]
-    scale = theta[1]
-    drift = theta[2] 
+    L_n =  2 
+    beta = 0             # Skew
+    mu = 0               # Location
+    alpha =  theta[0]    # Shape -- superdiffusion
+    scale =  theta[1]    # scale -- diffusion coefficient
+    drift =  theta[2]  # bulk particle drift speed
+    ########################
     ### Account for drift
-    pos = pos  -  (drift * L_n * t) 
-    dist_levi = np.zeros(len(pos))
-    ### Sum of Levi dist over x + n* L for finite n 
-    for i in range(-finite_val, finite_val):
-        x_dim = (np.abs(pos + i * L_n) ** (alpha)) / t
-        dist_levi += levy.levy(x_dim, alpha=alpha, beta=beta, 
-        mu=mu, sigma=scale, cdf=False) # p(theta | x)
-    log_sum = sum(np.log(dist_levi))
-    return  log_sum
+    pos_n =  pos  -  (drift * t) % L_n
+    for n in range(len(pos_n)):
+        if (np.abs(pos_n[n]) > 1):
+            pos_n[n] = pos_n[n] - np.sign(pos_n[n]) * 2
+    # So every single pos is -1 to 1
+    #######################
+    x_dim = pos_n / (t**(1 / alpha))
+    x_dim = np.sort(x_dim)
+    dist_init = levy.levy(x_dim, alpha=alpha, beta=beta, 
+    mu=mu, sigma=scale, cdf=False) # p(theta | x)
+    init_sum = np.sum(dist_init)
+    ewald_sum = init_sum
+    chi = 0
+    tol = 0.1                                     # 1% Tolerance
+    finite_range = 8
+    dist_levy = np.zeros(len(pos_n))
+    '''
+    Matt: Make jump_val
+    while... jump_val += finite_range
+    then for i in...
+    x_dim = (pos_n +  i * L_n + jump_val*L_n) / (t**(1 / alpha))
+    '''
+    #while  (ewald_sum / init_sum > tol):           # Add more terms 
+        #finite_val = finite_val + jump_val
+    for i in range(-finite_range, finite_range):
+            x_dim = (pos_n +  i * L_n) / (t**(1 / alpha))
+            x_dim = np.sort(x_dim)
+            #x_cts = np.linspace(np.min(x_dim), np.max(x_dim), bin_num)
+            dist_levy += levy.levy(x_dim, alpha=alpha, beta=beta, 
+            mu=mu, sigma=scale, cdf=False) # p(theta | x)
+        #ewald_sum = np.sum(levy.levy(x_dim, alpha=alpha, beta=beta, 
+        #    mu=mu, sigma=scale, cdf=False))
+        #print(f'Ewald Sum percentage: {(ewald_sum / init_sum) * 100} %')
+    
+    # Get data pdf
+    x_dim = pos_n / (t**(1 / alpha))    # Similarity transform
+    x_dim = np.sort(x_dim)
+    ### Make KDE
+    vals = stats.gaussian_kde(x_dim)
+    Test = stats.gaussian_kde.pdf(vals,x_dim)
+    chi = np.sum(((Test - dist_levy)**2 )/ dist_levy)  # chi^2
+    return -chi
 
 ###################################
 ### Defining prior distribution
 def log_prior(theta):
     alpha, scale, drift = theta
-    if 0.0 < alpha <= 2 and 0.05 < scale < 1e3 and 0 <= drift < 1e3:
+    if 1.0 < alpha <= 2.0 and 0.0 < scale < 1e4 and 0 <= drift < 100:
         return 0.0
     return -np.inf
 
@@ -286,7 +307,7 @@ def log_probability(theta, pos, t):
     lp = log_prior(theta)
     if not np.isfinite(lp):
         return -np.inf
-    return lp + log_lik_drift(theta,pos, t)
+    return lp + log_lik_drift(theta,pos, t) 
 
 #######################################################
 '''
@@ -297,7 +318,6 @@ def log_probability(theta, pos, t):
    is to account for the drift in parallel diffusion.
 '''
 #######################################################
-
 if __name__ == '__main__':
     
     ###################################
@@ -305,28 +325,28 @@ if __name__ == '__main__':
     ###################################
     ''' Non dimensionalise everything'''
     # L = driving scale
-    pos = 2 * Data_Use[:,0] / L                       # Divide by Driving scale
-    t = Data_Use[:,1] / ( (2 * L) / (c_s * Mach) )    # Divide by turbulent time
-    ###################################
-    ### Naive intial guess to check values
-    # Not used in fitting
-    par , log_lik = levy.fit_levy((pos**2 / t),beta=0)
-    values = par.get('0') ; scale = values[3] ; alpha = values[0]
-    mu = values[2]  ; beta = values[1]
-    print(f'scale: {scale}, Mean: {mu}')
-
-    ###################################
+    pos = Data_Use[:,0] / L                       # Divide by Driving scale
+    t = Data_Use[:,1] / ( L / (c_s * Mach) )    # Divide by turbulent time
+    perp = Data_Use[:,2] / L 
+    ####################################
+    print('')
+    print('=============================')
+    print('         MCMC trials         ')
+    print(f'    Using {len(pos)} data points')
+    print('=============================')
+    print('')
+    ####################################
     # Set initial drift guess as mean 
     n_cores = 3 # Core num
-    num_walkers = n_cores * 4
-    num_of_steps = 1200
-    alpha = 1.5
-    scale = 4
-    drift = 1
-    print(f'Alpha: {alpha}, Scale: {scale}, Drift: {drift}')
+    num_walkers = n_cores * 10
+    num_of_steps = 320
+    burn_num = 250
+    alpha = 1.4
+    scale = 0.5
+    drift = 0.2 
     params = np.array([alpha, scale, drift])
     init_guess = params
-    position = init_guess + 1e-2 * np.random.randn(num_walkers, 3) # Add random noise to guess
+    position = init_guess +  2e-1 * np.random.randn(num_walkers, 3) # Add random noise to guess
     nwalkers, ndim = position.shape
     
     ###################################
@@ -339,121 +359,50 @@ if __name__ == '__main__':
                         progress=True)
     
     ###################################
+    
     ### Visualisations
     fig, axes = plt.subplots(3, figsize=(10, 7), sharex=True)
     samples = sampler.get_chain()
-    labels = [r"$\alpha$", "scale", "drift"]
+    labels = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
     for i in range(ndim):
         ax = axes[i]
-        ax.plot(samples[:, :, i], "midnightblue", alpha=0.3)
+        ax.plot(samples[:, :, i], "midnightblue", alpha=0.4)
         ax.set_xlim(0, len(samples))
         ax.set_ylabel(labels[i])
         ax.yaxis.set_label_coords(-0.1, 0.5)
 
     
     axes[-1].set_xlabel("step number")
-    name = 'bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
+    name = 'drift_bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
     plt.savefig(name)
     plt.close()
-    flat_samples = sampler.get_chain(discard=400, thin=15, flat=True)
+    
+    flat_samples = sampler.get_chain(discard=burn_num, thin=15, flat=True)
+    flat_samples[:,1] = flat_samples[:,1]**(flat_samples[:,0])
+
+    ################################################
+    ### Saving results as txt file
+    ################################################
+    Filename = 'walkers_perp_' + args.dir + '.txt'
+    np.savetxt(Filename, flat_samples, delimiter=',')
+    ################################################
     
     ###################################
     ### Corner plot
     labels          = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
+    #labels          = [r"$\kappa$", r"$\gamma$"]
     # initialise figure
     fig             = corner.corner(flat_samples,
                         labels=labels,
                         quantiles=[0.16, 0.5, 0.84],
                         show_titles=True,
-                        title_kwargs={"fontsize": 12},
+                        title_kwargs={"fontsize": 13},
                         color='midnightblue',
                         truth_color='red',
-                        truths=[np.median(flat_samples[:,0]), np.median(flat_samples[:,1]), np.median(flat_samples[:,2])])
+                        truths=[np.median(flat_samples[:,0]),np.median(flat_samples[:,1]),np.median(flat_samples[:,2])])
     #fig.suptitle(r'$\mathcal{M} = 2 \ \ \ \mathcal{M}_{A0} \approx 2 \ \ \ \chi = 1 \times10^{-4}$',
     #fontsize = 24,y=0.98)
-    name = 'corner_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
-    plt.savefig(name)
-    plt.close()
-
-    ############################################################
-    ### Save data and 1 sigma levels
-    ############################################################
-    alpha_par  = np.median(flat_samples[:,0])
-    a_par_lo = np.median(flat_samples[:,0]) + np.std(flat_samples[:,0])
-    a_par_hi = np.median(flat_samples[:,0]) - np.std(flat_samples[:,0])
-    scale_par = np.median(flat_samples[:,1])
-    s_par_lo = np.median(flat_samples[:,1]) + np.std(flat_samples[:,1])
-    s_par_hi = np.median(flat_samples[:,1]) - np.std(flat_samples[:,1])
-    drift_par = np.median(flat_samples[:,2])
-    d_par_lo = np.median(flat_samples[:,2]) + np.std(flat_samples[:,2])
-    d_par_hi = np.median(flat_samples[:,2]) - np.std(flat_samples[:,2])
-    
-    ###################################
-    ### Parallel
-    ###################################
-    ''' Non dimensionalise everything'''
-    # L = driving scale
-    pos = 2 * Data_Use[:,2] / L                       # Divide by Driving scale
-    t = Data_Use[:,1] / ( (2 * L) / (c_s * Mach) )    # Divide by turbulent time
-    ###################################
-   
-    ###################################
-    # Set initial drift guess as mean 
-    n_cores = 3 # Core num
-    #num_walkers = n_cores * 4
-    #num_of_steps = 1000
-    alpha = 1.5
-    scale = 4
-    drift = 1
-    print(f'Alpha: {alpha}, Scale: {scale}, Drift: {drift}')
-    params = np.array([alpha, scale, drift])
-    init_guess = params
-    position = init_guess + 1e-2 * np.random.randn(num_walkers, 3) # Add random noise to guess
-    nwalkers, ndim = position.shape
-    
-    ###################################
-    # Multiprocessing    
-    with Pool(n_cores) as pool:
-        sampler = emcee.EnsembleSampler(
-            nwalkers, ndim, log_probability, args=(pos, t), pool=pool)
-        sampler.run_mcmc(position,
-                        num_of_steps,
-                        progress=True)
-    
-    ###################################
-    ### Visualisations
-    fig, axes = plt.subplots(3, figsize=(10, 7), sharex=True)
-    samples = sampler.get_chain()
-    labels = [r"$\alpha$", "scale", "drift"]
-    for i in range(ndim):
-        ax = axes[i]
-        ax.plot(samples[:, :, i], "midnightblue", alpha=0.3)
-        ax.set_xlim(0, len(samples))
-        ax.set_ylabel(labels[i])
-        ax.yaxis.set_label_coords(-0.1, 0.5)
-
-    
-    axes[-1].set_xlabel("step number")
-    name = 'bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_par' + '.png'
-    plt.savefig(name)
-    plt.close()
-    flat_samples = sampler.get_chain(discard=400, thin=15, flat=True)
-    
-    ###################################
-    ### Corner plot
-    labels          = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
-    # initialise figure
-    fig             = corner.corner(flat_samples,
-                        labels=labels,
-                        quantiles=[0.16, 0.5, 0.84],
-                        show_titles=True,
-                        title_kwargs={"fontsize": 12},
-                        color='midnightblue',
-                        truth_color='red',
-                        truths=[np.median(flat_samples[:,0]), np.median(flat_samples[:,1]), np.median(flat_samples[:,2])])
-    #fig.suptitle(r'$\mathcal{M} = 2 \ \ \ \mathcal{M}_{A0} \approx 2 \ \ \ \chi = 1 \times10^{-4}$',
-    #fontsize = 24,y=0.98)
-    name = 'corner_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_par' + '.png'
+    name = 'drift_corner_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_perp' + '.png'
     plt.savefig(name)
     plt.close()
     
@@ -461,74 +410,375 @@ if __name__ == '__main__':
     ### Save data and 1 sigma levels
     ############################################################
     alpha_perp  = np.median(flat_samples[:,0])
-    a_perp_lo = np.median(flat_samples[:,0]) + np.std(flat_samples[:,0])
-    a_perp_hi = np.median(flat_samples[:,0]) - np.std(flat_samples[:,0])
+    a_perp_lo = alpha_perp - np.quantile(flat_samples[:,0],0.16) 
+    a_perp_hi = np.quantile(flat_samples[:,0],0.84) - alpha_perp
     scale_perp = np.median(flat_samples[:,1])
-    s_perp_lo = np.median(flat_samples[:,1]) + np.std(flat_samples[:,1])
-    s_perp_hi = np.median(flat_samples[:,1]) - np.std(flat_samples[:,1])
+    s_perp_lo = scale_perp - np.quantile(flat_samples[:,1],0.16) 
+    s_perp_hi = np.quantile(flat_samples[:,1],0.84) - scale_perp
     drift_perp = np.median(flat_samples[:,2])
-    d_perp_lo = np.median(flat_samples[:,2]) + np.std(flat_samples[:,2])
-    d_perp_hi = np.median(flat_samples[:,2]) - np.std(flat_samples[:,2])
-
-    ############################################################
-    ### Making results array
-    ############################################################
-    # Results arrary, format is: 
-    # Mach || Alfven || Ion || Dpar || Dperp || EPar || EPerp ||
-    #  alpha_par || alpha_perp || scale_par || scale_perp || drift_par || drift_perp ||
+    d_perp_lo = drift_perp - np.quantile(flat_samples[:,2],0.16) 
+    d_perp_hi = np.quantile(flat_samples[:,2],0.84) - drift_perp
     
-    IonFrac = 1 * 10**(-args.chi)
-    KPar = scale_par**alpha_par
-    KPerp = scale_perp**alpha_perp
-    ErrorPerp = 1
-    ErrorPar = 1
-    results = np.array([args.Mach, args.Alfven, IonFrac, KPar , KPerp , ErrorPar , ErrorPerp,
-    alpha_par, a_par_lo, a_par_hi, alpha_perp, a_perp_lo, a_perp_hi, 
-    scale_par, s_par_lo, s_par_hi, scale_perp, s_perp_lo, s_perp_hi, 
-    drift_par, d_par_lo, d_par_hi,drift_perp, d_perp_lo, d_perp_hi])
+    ###################################
+    ### Parallel
+    ###################################
+    # Non dimensionalise everything
+    # L = driving scale
+    pos = Data_Use[:,2] / L                     # Divide by Driving scale
+    t = Data_Use[:,1] / ( L / (c_s * Mach) )    # Divide by turbulent time
+    ###################################
+    
+    ###################################
+    # Set initial guess 
+    alpha = 1.5
+    scale = 1
+    drift = 1
+    params = np.array([alpha, scale, drift])
+    init_guess = params
+    position = init_guess + 2e-1 * np.random.randn(num_walkers, 3) # Add random noise to guess
+    nwalkers, ndim = position.shape
+    
+    ###################################
+    # Multiprocessing    
+    with Pool(n_cores) as pool:
+        sampler = emcee.EnsembleSampler(
+            nwalkers, ndim, log_probability, args=(pos, t), pool=pool)
+        sampler.run_mcmc(position,
+                        num_of_steps,
+                        progress=True)
+    
+    ###################################
+    ### Visualisations
+    fig, axes = plt.subplots(3, figsize=(10, 7), sharex=True)
+    samples = sampler.get_chain()
+    labels = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
+    for i in range(ndim):
+        ax = axes[i]
+        ax.plot(samples[:, :, i], "midnightblue", alpha=0.4)
+        ax.set_xlim(0, len(samples))
+        ax.set_ylabel(labels[i])
+        ax.yaxis.set_label_coords(-0.1, 0.5)
+
+    
+    axes[-1].set_xlabel("step number")
+    name = 'drift_bands_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_par' + '.png'
+    plt.savefig(name)
+    plt.close()
+    flat_samples = sampler.get_chain(discard=burn_num, thin=15, flat=True)
+    flat_samples[:,1] = flat_samples[:,1]**(flat_samples[:,0])
 
     ################################################
     ### Saving results as txt file
     ################################################
-    Filename = 'MCMC_results_' + args.dir + '.txt'
-    np.savetxt(Filename, results, delimiter=',')
-
+    Filename = 'walkers_par_' + args.dir + '.txt'
+    np.savetxt(Filename, flat_samples, delimiter=',')
+    ################################################
+    
+    ###################################
+    ### Corner plot
+    labels          = [r"$\alpha$", r"$\kappa$", r"$\gamma$"]
+    # initialise figure
+    fig             = corner.corner(flat_samples,
+                        labels=labels,
+                        quantiles=[0.16, 0.5, 0.84],
+                        show_titles=True,
+                        title_kwargs={"fontsize": 13},
+                        color='midnightblue',
+                        truth_color='red',
+                        truths=[np.median(flat_samples[:,0]), np.median(flat_samples[:,1]), np.median(flat_samples[:,2])])
+    #fig.suptitle(r'$\mathcal{M} = 2 \ \ \ \mathcal{M}_{A0} \approx 2 \ \ \ \chi = 1 \times10^{-4}$',
+    #fontsize = 24,y=0.98)
+    name = 'drift_corner_' + str(Mach) + '_' + str(Alfven) + '_' + str(args.chi) + '_par' + '.png'
+    plt.savefig(name)
+    plt.close()
+    
+    ############################################################
+    ### Save data and 1 sigma levels
+    ############################################################
+    alpha_par  = np.median(flat_samples[:,0])
+    a_par_lo = alpha_par - np.quantile(flat_samples[:,0],0.16) 
+    a_par_hi = np.quantile(flat_samples[:,0],0.84) - alpha_par
+    scale_par = np.median(flat_samples[:,1])
+    s_par_lo = scale_par - np.quantile(flat_samples[:,1],0.16) 
+    s_par_hi = np.quantile(flat_samples[:,1],0.84) - scale_par
+    drift_par = np.median(flat_samples[:,2])
+    d_par_lo = drift_par - np.quantile(flat_samples[:,2],0.16) 
+    d_par_hi = np.quantile(flat_samples[:,2],0.84) - drift_par
     ################################################
     ### Plotting fitted Levy distribution
     ################################################
+    '''
+    #Need to sum analytical fits over "finite range" bounds
+    #Need to check the normalisation,
+    #int dx (analytic) == \int dx (Hist)
+    '''
+
+
     ### Get hist data
-    fig = plt.figure(figsize=(20.0,8.0), dpi = 150)
+    fig = plt.figure(figsize=(20.0,12.0), dpi = 150)
+    plt.style.use('dark_background')
     ### Plotting Perpendicular
-    pos = 2 * Data_Use[:,0] / L 
-    pos_perp = (((np.abs(pos - drift_perp * t))**(alpha_perp))) / t
-    Prob_perp_analytic = levy.levy(pos_perp, alpha=alpha_perp, beta=0, 
-        mu=0, sigma=scale_perp, cdf=False)
-    #Prob_perp_analytic = Prob_perp_analytic / sum(Prob_perp_analytic)
-    pos = 2 * Data_Use[:,2] / L 
-    pos_par = (((np.abs(pos - drift_par * t))**(alpha_par))) / t
-    Prob_par_analytic = levy.levy(pos_par, alpha=alpha_par, beta=0, 
-        mu=0, sigma=scale_par, cdf=False)
-    #Prob_par_analytic = Prob_par_analytic / sum(Prob_par_analytic)
-    plt.subplot(1,2,1)
-    counts, bins = np.histogram(pos_perp, bins = 25)
-    #counts = counts / sum(counts)
-    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', edgecolor = 'midnightblue', label = r'CRIPTIC')
-    plt.scatter(pos_perp, Prob_perp_analytic, linestyle='--', c='red',
-            alpha=0.99, label='Levy', s = 7)
-    #plt.plot(bincenters, y / max(y), ls = '--', c=green_m, lw=2,
-    #        label=r'CRIPTIC $\Delta x$')
-    plt.legend(frameon=False,fontsize=20, loc = 'upper right')
-    plt.xlabel(r'($|\Delta x - \nu_{\perp}|)^{\alpha_{\perp}} / t$', fontsize = 26)
-    plt.title(r'Perpendicular $\mathcal{M}_{A0} \approx 8$',fontsize = 28)
+    ### DELETE after ad hoc fitting ###
+    #alpha_perp = 1.35
+    #alpha_par = 1.5
+    #scale_perp = 1.2
+    #scale_par = 1
+    #drift_perp = 0
+    #drift_par = 2
+    print('')
+    print('====== Parameters =======')
+    print(f'Alpha: {alpha_perp}')
+    print(f'Scale: {scale_perp}')
+    print(f'========================')
+    print('')
+    ####################################
+    ### Perp Ewald Sum
+    L_n =  2 
+    finite_val = 8
+    beta = 0             # Skew
+    mu = 0               # Location
+    ########################
+    ### Account for drift
+    pos = Data_Use[:,0] / L 
+    pos_n =  pos  -  (drift_perp * t) % L_n
+    for n in range(len(pos_n)):
+        if (np.abs(pos_n[n]) > 1):
+            pos_n[n] = pos_n[n] - np.sign(pos_n[n]) * 2
+    # So every single pos is -1 to 1
+    #######################
+    x_dim = pos / (t**(1 / alpha_perp))
+    x_dim = np.sort(x_dim)
+    x_diffs = np.diff(x_dim)
+    dist_levy = np.zeros(len(x_dim))
+    dist_init = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+    mu=mu, sigma=scale_perp, cdf=False) # p(theta | x)
+    init_sum = np.sum(dist_init)
+    ewald_sum = init_sum
+    tol = 0.1                                     # 1% Tolerance
+    #while  (ewald_sum / init_sum > tol):           # Add more terms 
+    for i in range(-finite_val, finite_val):
+            x_dim = (pos +  i * L_n) / (t**(1 / alpha_perp))
+            x_dim = np.sort(x_dim)
+            dist_levy += levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_perp, cdf=False) # p(theta | x)
+    #    ewald_sum = np.sum(levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+    #        mu=mu, sigma=scale_perp, cdf=False))
+    Prob_perp_analytic = dist_levy
+    x_dim = pos / (t**(1 / alpha_perp))
+    x_dim = np.sort(x_dim)
+    Prob_perp_n0 = levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_perp, cdf=False)
+
+    vals = stats.gaussian_kde(x_dim)
+    KDE_perp = stats.gaussian_kde.pdf(vals,x_dim)
     
-    plt.subplot(1,2,2)
-    plt.scatter(pos_par, Prob_par_analytic, linestyle='--', c='red',
-            alpha=0.99, label='Levy', s = 7)
-    counts, bins = np.histogram(pos_par, bins = 25)
-    #counts = counts / sum(counts)
-    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', edgecolor = 'midnightblue', label = r'CRIPTIC')
-    plt.legend(frameon=False,fontsize=20, loc = 'upper right')
-    plt.xlabel(r'($|\Delta z - \nu_{\parallel}|)^{\alpha_{\parallel}} / t$', fontsize = 26)
-    plt.title(r'Parallel $\mathcal{M}_{A0} \approx 8$',fontsize = 28)
-    plt.savefig("Fitting.png")
+    ############################################
+    ### Finite val 2
+    finite_val_2 = 20
+    Prob_perp_analytic_2 = np.zeros(len(x_dim))
+    for i in range(-finite_val_2, finite_val_2):
+            x_dim = (pos +  i * L_n) / (t**(1 / alpha_perp))
+            x_dim = np.sort(x_dim)
+            Prob_perp_analytic_2 += levy.levy(x_dim, alpha=alpha_perp, beta=beta, 
+            mu=mu, sigma=scale_perp, cdf=False) # p(theta | x)
+    x_dim = pos / (t**(1 / alpha_perp))
+    x_dim = np.sort(x_dim)
+
+    # Chi^2
+    vals = stats.gaussian_kde(x_dim)
+    Test = stats.gaussian_kde.pdf(vals,x_dim)
+    log_sum = sum(np.log(Prob_perp_analytic))
+    chi = np.sum((Test - Prob_perp_analytic)**2 / Prob_perp_analytic)
+    chi_perp = r'$\chi^2$ = ' + str(round(chi,2))
+    lik_lab = r'$logLik$ $=$ ' + str(round(sum(np.log(Prob_perp_analytic)),2))
+    ###############################################################
+    ### Parallel ###
+    
+    pos = Data_Use[:,2] / L 
+    Prob_par_analytic = np.zeros(len(pos))
+    pos_par = pos  -  (drift_par * t) % L_n
+    for n in range(len(pos_par)):
+        if np.abs(pos_par[n]) > 1:
+                pos_par[n] = pos_par[n] - np.sign(pos_par[n]) * 2
+    bin_num =  45
+    x_dim_par = pos_par / (t**(1 / alpha_par))
+    x_dim_par = np.sort(x_dim_par)
+    x_diffs = np.diff(x_dim)
+    dist_levy = np.zeros(len(x_dim_par))
+    dist_init = levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
+    mu=mu, sigma=scale_par, cdf=False) # p(theta | x)
+    init_sum = np.sum(dist_init)
+    ewald_sum = init_sum
+    tol = 0.1                                     # 1% Tolerance
+    #while  (ewald_sum / init_sum > tol):           # Add more terms 
+    for i in range(-finite_val, finite_val):
+            x_dim_par = (pos_par +  i * L_n) / (t**(1 / alpha_par))
+            x_dim_par = np.sort(x_dim_par)
+            dist_levy += levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
+            mu=mu, sigma=scale_par, cdf=False) # p(theta | x)
+    #    ewald_sum = np.sum(levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
+    #        mu=mu, sigma=scale_par, cdf=False))
+    Prob_par_analytic = dist_levy
+    x_dim_par = pos_par / (t**(1 / alpha_par))
+    x_dim_par = np.sort(x_dim_par)
+    Prob_par_n0 = levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
+            mu=mu, sigma=scale_par, cdf=False)
+
+    vals = stats.gaussian_kde(x_dim_par)
+    KDE_par = stats.gaussian_kde.pdf(vals,x_dim_par)
+
+    ############################################
+    ### Finite val 2
+    #finite_val_2 = 20
+    Prob_par_analytic_2 = np.zeros(len(x_dim_par))
+    for i in range(-finite_val_2, finite_val_2):
+            x_dim_par = (pos_par +  i * L_n) / (t**(1 / alpha_par))
+            x_dim_par = np.sort(x_dim_par)
+            Prob_par_analytic_2 += levy.levy(x_dim_par, alpha=alpha_par, beta=beta, 
+            mu=mu, sigma=scale_par, cdf=False) # p(theta | x)
+    
+    x_dim_par = pos_par / (t**(1 / alpha_par))
+    x_dim_par = np.sort(x_dim_par)
+    pos_par = x_dim_par
+
+    vals = stats.gaussian_kde(x_dim_par)
+    Test = stats.gaussian_kde.pdf(vals,x_dim_par)
+    log_sum = sum(np.log(Prob_perp_analytic))
+    chi = np.sum((Test - Prob_par_analytic)**2 / Prob_par_analytic)
+    chi_par = r'$\chi^2$ = ' + str(round(chi,2))
+
+    
+    #############################################################
+    lab_a_perp = r'$\alpha = ' + str(round(alpha_perp,3)) + r'^{' + str(round(a_perp_hi,3)) + r'}_{' + str(round(a_perp_lo,3)) + r'}$' 
+    lab_s_perp = r'$\kappa = ' + str(round(scale_perp,3)) + r'^{' + str(round(s_perp_hi,3)) + r'}_{' + str(round(s_perp_lo,3)) + r'}$' 
+    lab_d_perp = r'$\gamma = ' + str(round(drift_perp,3)) + r'^{' + str(round(d_perp_hi,3)) + r'}_{' + str(round(d_perp_lo,3)) + r'}$' 
+
+    
+    lab_a_par = r'$\alpha = ' + str(round(alpha_par,3)) + r'^{' + str(round(a_par_hi,3)) + r'}_{' + str(round(a_par_lo,3)) + r'}$' 
+    lab_s_par = r'$\kappa = ' + str(round(scale_par,3)) + r'^{' + str(round(s_par_hi,3)) + r'}_{' + str(round(s_par_lo,3)) + r'}$' 
+    lab_d_par = r'$\gamma = ' + str(round(drift_par,3)) + r'^{' + str(round(d_par_hi,3)) + r'}_{' + str(round(d_par_lo,3)) + r'}$' 
+    
+
+    ### Colors
+    fig = plt.figure(figsize=(18.5,14.5), dpi = 200)
+    Hist_col = 'aqua'
+    Levy_col = 'darkorange'
+    plt.subplot(2,2,1)
+    counts, bins = np.histogram(x_dim, bins = bin_num, density = True)
+    difs = np.diff(x_dim)
+    print(f'Sumcounts = {round(sum(counts * (bins[2] - bins[1])),3)} Sum Model = {round(np.sum(difs * Prob_perp_analytic[1:len(Prob_perp_analytic)]),3)}')
+    plt.hist(bins[:-1], bins,weights=counts,histtype='step', 
+    edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2, zorder = 1)
+    #plt.plot(x_dim,KDE_perp , linestyle='--', c='yellow',
+    #        alpha=0.99, label=r'KDE', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
+            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
+            alpha=0.99, label=f'Levy n = {finite_val}', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
+            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
+    plt.legend(frameon=False,fontsize=16, loc = 'upper right')
+    plt.ylabel(r'PDF', fontsize = 26)
+    plt.title(r'Perpendicular $\mathcal{M}_{A0} \approx$ ' + str(Alfven),fontsize = 28)
+    # Add labels
+    xmin, xmax, ymin, ymax = plt.axis()
+    x_text = 0.9*xmin
+    y_text_1 = 0.9*ymax ; y_text_2 = 0.8*ymax ; y_text_3 = 0.7*ymax ; y_text_4 = 0.6*ymax
+    plt.text(x_text, y_text_1, lab_a_perp, fontsize = 22)
+    plt.text(x_text, y_text_2, lab_s_perp, fontsize = 22)
+    plt.text(x_text, y_text_3, chi_perp, fontsize = 22)
+    #plt.text(x_text, y_text_1, chi_lab, fontsize = 22)
+
+    plt.subplot(2,2,3)
+    plt.hist(bins[:-1], bins, weights=counts, density = True, histtype='step', 
+    edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2, zorder = 1)
+    #plt.scatter(pos_perp, Prob_perp_analytic, s = 8, c = Levy_col, label=r'Levy', zorder = 2)
+    #plt.plot(x_dim,KDE_perp , linestyle='--', c='yellow',
+    #        alpha=0.99, label=r'KDE', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
+            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
+            alpha=0.99, label=f'Levy n = {finite_val}', lw = 3, zorder = 2)
+    plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
+            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    plt.legend(frameon=False,fontsize=16, loc = 'upper right')
+    plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
+    plt.ylabel(r'log(PDF)', fontsize = 26)
+    plt.yscale('log')
+    #plt.savefig('drift_' +  str(Mach) + '_' + str(Alfven) + '_' + str(args.chi)  + "_fitting.png")
+    #plt.close()
+    
+    plt.subplot(2,2,2)
+    #plt.plot(x_dim_par,KDE_par , linestyle='--', c='yellow',
+    #        alpha=0.99, label=r'KDE', lw = 3, zorder = 2)
+    plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
+            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
+    plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
+            alpha=0.99, label=f'Levy n = {finite_val}', lw = 2)
+    plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
+            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    counts, bins = np.histogram(x_dim_par, bins = bin_num)
+    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
+    edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
+    plt.legend(frameon=False,fontsize=16, loc = 'upper right')
+    plt.title(r'Parallel $\mathcal{M}_{A0} \approx$ ' + str(Alfven),fontsize = 28)
+    # Add labels
+    xmin, xmax, ymin, ymax = plt.axis()
+    x_text = 0.9*xmin
+    y_text_1 = 0.9*ymax ; y_text_2 = 0.8*ymax ; y_text_3 = 0.7*ymax
+    plt.text(x_text, y_text_1, lab_a_par, fontsize = 24)
+    plt.text(x_text, y_text_2, lab_s_par, fontsize = 24)
+    plt.text(x_text, y_text_3, chi_par, fontsize = 24)
+
+    plt.subplot(2,2,4)
+    #plt.plot(x_dim_par,KDE_par , linestyle='--', c='yellow',
+    #        alpha=0.99, label=r'KDE', lw = 3, zorder = 2)
+    plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
+            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
+    plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
+            alpha=0.99, label=f'Levy n = {finite_val}', lw = 2)
+    plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
+            alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
+    edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
+    plt.legend(frameon=False,fontsize=16, loc = 'upper right')
+    plt.xlabel(r'($|\Delta z - \gamma_{\parallel}\cdot t|) / t^{1 / \alpha_{\parallel}}$', fontsize = 26)
+    plt.yscale('log')
+    plt.savefig('drift_' +  str(Mach) + '_' + str(Alfven) + '_' + str(args.chi)  + "_fitting.png")
     plt.close()
+    
+
+    #################################################
+    ### Saving outputs
+    ### Making results array
+    ############################################################
+    '''
+    # Results arrary, format is: 
+    # Mach || Alfven Mach || Ion Fraction || D_par || D_perp || Error_par || Error_perp || Alpha_par || Alpha_perp
+    '''
+    APar = alpha_par
+    APerp = alpha_perp
+    ErrorAPar_L = a_par_lo
+    ErrorAPar_H = a_par_hi
+    ErrorAPerp_L = a_perp_lo
+    ErrorAPerp_H = a_perp_hi
+    KPar = scale_perp 
+    KPerp = scale_par 
+    ErrorKPar_L = s_par_lo
+    ErrorKPar_H = s_par_hi
+    ErrorKPerp_L = s_perp_lo
+    ErrorKPerp_H = s_perp_hi
+    IonFrac = 1 * 10**(-args.chi)
+    results = np.array([args.Mach, args.Alfven, IonFrac, KPar , KPerp , 
+    ErrorKPar_L , ErrorKPar_H, ErrorKPerp_L, ErrorKPerp_H,
+    APar, APerp,
+    ErrorAPar_L , ErrorAPar_H, ErrorAPerp_L, ErrorAPerp_H,])
+    
+    ################################################
+    ### Saving results as txt file
+    ################################################
+    Filename = 'coefs_' + args.dir + '.txt'
+    np.savetxt(Filename, results, delimiter=',')
+    ################################################
+   
