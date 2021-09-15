@@ -148,7 +148,7 @@ t_alfven = (2 * L) / V_alfven
 #############################################################
 ### Beginning data read in
 #############################################################
-by_num = 100 # Added to speed up small scale local PC testing set to 1 for GADI
+by_num = 25 # Added to speed up small scale local PC testing set to 1 for GADI
 if (by_num > args.filenum):
     by_num = 1
     print(f'Chunk gap revert to {1}')
@@ -233,7 +233,7 @@ Data_Use = Data_Combine[Data_Combine[:,1] > 1e1]
 Data_Use = Data_Use[Data_Use[:,1] < 1e14]
 ### Randomly sample data points
 number_of_rows = Data_Use.shape[0]
-data_points = 500
+data_points = 5000
 random_indices = np.random.choice(number_of_rows, size=data_points, replace=False)
 Data_Use = Data_Use[random_indices, :]
 
@@ -540,8 +540,9 @@ if __name__ == '__main__':
     print('')
     ####################################
     ### Perp Ewald Sum
+    tol = 0.1
     L_n =  2 
-    finite_val = 8
+    finite_range = 8
     beta = 0             # Skew
     mu = 0               # Location
     ########################
@@ -578,6 +579,9 @@ if __name__ == '__main__':
             dist_levy += dist_n1
         err = np.abs(1 - np.sum(dist_n1) / np.sum(dist_n0))
         jump_val += finite_range - 1
+    sorted_indices = np.argsort(x_dim)
+    x_dim = x_dim[sorted_indices]
+    dist_levy = dist_levy[sorted_indices]
     Prob_perp_analytic = dist_levy
     ################################################
     
@@ -643,6 +647,9 @@ if __name__ == '__main__':
             dist_levy += dist_n1
         err = np.abs(1 - np.sum(dist_n1) / np.sum(dist_n0))
         jump_val += finite_range - 1
+    sorted_indices = np.argsort(x_dim_par)
+    x_dim_par = x_dim_par[sorted_indices]
+    dist_levy = dist_levy[sorted_indices]
     Prob_par_analytic = dist_levy
     ################################################
 
