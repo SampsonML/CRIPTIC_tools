@@ -232,7 +232,7 @@ Data_Use = Data_Combine[Data_Combine[:,1] > 1e1]
 Data_Use = Data_Use[Data_Use[:,1] < 1e13]
 ### Randomly sample data points
 number_of_rows = Data_Use.shape[0]
-data_points = 500
+data_points = 1000
 random_indices = np.random.choice(number_of_rows, size=data_points, replace=False)
 Data_Use = Data_Use[random_indices, :]
 
@@ -349,9 +349,9 @@ if __name__ == '__main__':
     ####################################
     # Set initial drift guess as mean 
     n_cores = 3 # Core num
-    num_walkers = n_cores * 4
-    num_of_steps = 250
-    burn_num = 200
+    num_walkers = n_cores * 8
+    num_of_steps = 500
+    burn_num = 400
     alpha = 1.4
     scale = 0.5
     drift = 0.2 
@@ -783,5 +783,4 @@ if __name__ == '__main__':
     Filename = 'coefs_' + args.dir + '.txt'
     np.savetxt(Filename, results, delimiter=',')
     ################################################
-   
    
