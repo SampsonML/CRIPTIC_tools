@@ -693,6 +693,33 @@ if __name__ == '__main__':
     lab_d_par = r'$\gamma = ' + str(round(drift_par,3)) + r'^{' + str(round(d_par_hi,3)) + r'}_{' + str(round(d_par_lo,3)) + r'}$' 
     
 
+    # Bin Levy distributions to show as hist
+    bin_numL = bin_num
+    from scipy.stats import binned_statistic
+    s, edges, _ = binned_statistic(x_dim_c,Prob_perp_analytic,
+      statistic='median', bins=bin_numL)
+    for i in range(len(s)):
+        if (np.isfinite(s[i]) == False):
+            s[i] = 0
+
+    s0, edges0, _ = binned_statistic(x_dim_c,Prob_perp_n0,
+      statistic='median', bins=bin_numL)
+    for i in range(len(s0)):
+        if (np.isfinite(s0[i]) == False):
+            s0[i] = 0
+
+    sp, edgesp, _ = binned_statistic(x_dim_par_c,Prob_par_analytic,
+      statistic='median', bins=bin_numL)
+    for i in range(len(sp)):
+        if (np.isfinite(sp[i]) == False):
+            sp[i] = 0
+
+    s0p, edges0p, _ = binned_statistic(x_dim_par_c,Prob_par_n0,
+      statistic='median', bins=bin_numL)
+    for i in range(len(s0p)):
+        if (np.isfinite(s0p[i]) == False):
+            s0p[i] = 0
+
     ### Colors
     fig = plt.figure(figsize=(18.5,14.5), dpi = 200)
     Hist_col = 'aqua'
@@ -701,12 +728,11 @@ if __name__ == '__main__':
     counts, bins = np.histogram(x_dim, bins = bin_num, density = True)
     plt.hist(bins[:-1], bins,weights=counts,histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2, zorder = 1)
-    plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
-            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
-    plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = Converged', lw = 3, zorder = 2)
-    #plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
-    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    #counts2, bins2 = np.histogram(x_dim, bins = bin_num, density = True)
+    plt.hist(edges[:-1], edges,weights=s, histtype='step',
+    edgecolor = Levy_col, label=f'Levy n = {n_perp}', linewidth=2, zorder = 2)
+    plt.hist(edges0[:-1], edges0,weights=s0, histtype='step',
+    edgecolor = purp_m, label=f'Levy n = 0', linewidth=2, zorder = 1)
     plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.ylabel(r'PDF', fontsize = 26)
@@ -717,18 +743,16 @@ if __name__ == '__main__':
     y_text_1 = 0.9*ymax ; y_text_2 = 0.8*ymax ; y_text_3 = 0.7*ymax ; y_text_4 = 0.6*ymax
     plt.text(x_text, y_text_1, lab_a_perp, fontsize = 22)
     plt.text(x_text, y_text_2, lab_s_perp, fontsize = 22)
-    plt.text(x_text, y_text_3, chi_perp, fontsize = 22)
+    plt.text(x_text, y_text_3, lab_d_perp, fontsize = 22)
     #plt.text(x_text, y_text_1, chi_lab, fontsize = 22)
 
     plt.subplot(2,2,3)
     plt.hist(bins[:-1], bins, weights=counts, density = True, histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2, zorder = 1)
-    plt.plot(x_dim,Prob_perp_n0 , linestyle='--', c=purp_m,
-            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
-    plt.plot(x_dim,Prob_perp_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = Converged', lw = 3, zorder = 2)
-    #plt.plot(x_dim,Prob_perp_analytic_2 , linestyle='-.', c=green_m,
-    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
+    plt.hist(edges[:-1], edges,weights=s, histtype='step',
+    edgecolor = Levy_col, label=f'Levy n = {n_perp}', linewidth=2, zorder = 2)
+    plt.hist(edges0[:-1], edges0,weights=s0, histtype='step',
+    edgecolor = purp_m, label=f'Levy n = 0', linewidth=2, zorder = 1)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.xlabel(r'($|\Delta x - \gamma_{\perp}\cdot t|) / t^{1 / \alpha_{\perp}}$', fontsize = 26)
     plt.ylabel(r'log(PDF)', fontsize = 26)
@@ -737,15 +761,13 @@ if __name__ == '__main__':
     #plt.close()
     
     plt.subplot(2,2,2)
-    plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
-            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
-    plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = Converged', lw = 2)
-    #plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
-    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     counts, bins = np.histogram(x_dim_par, bins = bin_num)
     plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
+    plt.hist(edgesp[:-1], edgesp,weights=sp, histtype='step',
+    edgecolor = Levy_col, label=f'Levy n = {n_perp}', linewidth=2, zorder = 2)
+    plt.hist(edges0p[:-1], edges0p,weights=s0p, histtype='step',
+    edgecolor = purp_m, label=f'Levy n = 0', linewidth=2, zorder = 1)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.title(r'Parallel $\mathcal{M}_{A0} \approx$ ' + str(Alfven),fontsize = 28)
     # Add labels
@@ -754,19 +776,15 @@ if __name__ == '__main__':
     y_text_1 = 0.9*ymax ; y_text_2 = 0.8*ymax ; y_text_3 = 0.7*ymax
     plt.text(x_text, y_text_1, lab_a_par, fontsize = 24)
     plt.text(x_text, y_text_2, lab_s_par, fontsize = 24)
-    plt.text(x_text, y_text_3, chi_par, fontsize = 24)
+    plt.text(x_text, y_text_3, lab_d_par, fontsize = 24)
 
     plt.subplot(2,2,4)
-    #plt.plot(x_dim_par,KDE_par , linestyle='--', c='yellow',
-    #        alpha=0.99, label=r'KDE', lw = 3, zorder = 2)
-    plt.plot(x_dim_par,Prob_par_n0 , linestyle='--', c=purp_m,
-            alpha=0.99, label=r'Levy n = 0', lw = 3, zorder = 2)
-    plt.plot(x_dim_par, Prob_par_analytic , linestyle='-', c=Levy_col,
-            alpha=0.99, label=f'Levy n = Converged', lw = 2)
-    #plt.plot(x_dim_par,Prob_par_analytic_2 , linestyle='-.', c=green_m,
-    #        alpha=0.99, label=f'Levy n = {finite_val_2}', lw = 3, zorder = 2)
     plt.hist(bins[:-1], bins, weights=counts, density = 'true', histtype='step', 
     edgecolor = Hist_col, label = r'CRIPTIC', linewidth=2)
+    plt.hist(edgesp[:-1], edgesp,weights=sp, histtype='step',
+    edgecolor = Levy_col, label=f'Levy n = {n_perp}', linewidth=2, zorder = 2)
+    plt.hist(edges0p[:-1], edges0p,weights=s0p, histtype='step',
+    edgecolor = purp_m, label=f'Levy n = 0', linewidth=2, zorder = 1)
     plt.legend(frameon=False,fontsize=16, loc = 'upper right')
     plt.xlabel(r'($|\Delta z - \gamma_{\parallel}\cdot t|) / t^{1 / \alpha_{\parallel}}$', fontsize = 26)
     plt.yscale('log')
@@ -806,5 +824,3 @@ if __name__ == '__main__':
     Filename = 'coefs_' + args.dir + '.txt'
     np.savetxt(Filename, results, delimiter=',')
     ################################################
-   
-   
