@@ -284,6 +284,12 @@ def Gperiod(x, t, sigma, alpha, u, period, eps=5.0e-3, nmax=500):
     # Return
     return G
 
+######################################
+#                                    #
+#  Likelyhood functions for MCMC     #
+#                                    #
+######################################
+
 # Define the log likelihood function; this is just the sum of the log's of the Green's functions
 def logL(pars, x, t, period=2):
     
